@@ -1,12 +1,13 @@
-
 import Phaser from 'phaser';
 import { Player, Enemy, Card, CardType, IntentType, StatusType, EffectType, TargetType, CardId } from '../../types';
 import { CardEntity } from '../objects/CardEntity';
 import { EnemyEntity } from '../objects/EnemyEntity';
 import { CARD_DATABASE } from '../../data/cards';
-import { WARRIOR_DATA } from '../../data/warrior'; // Default char for now
+import { WARRIOR_DATA } from '../../data/warrior'; 
 import { generateEnemyProfile } from '../../services/geminiService';
 import { generateId } from '../../constants';
+import { UIHelper } from '../utils/UIHelper';
+import { COLORS, TEXT_STYLES } from '../utils/theme';
 
 export class BattleScene extends Phaser.Scene {
   private player: Player;
@@ -19,6 +20,7 @@ export class BattleScene extends Phaser.Scene {
   private enemyContainer: Phaser.GameObjects.Container;
   private handContainer: Phaser.GameObjects.Container;
   private uiContainer: Phaser.GameObjects.Container;
+  private fxContainer: Phaser.GameObjects.Container;
 
   private enemyEntities: Map<string, EnemyEntity> = new Map();
   private cardEntities: Map<string, CardEntity> = new Map();
@@ -28,18 +30,24 @@ export class BattleScene extends Phaser.Scene {
   private isPlayerTurn: boolean = true;
   
   private dragArrow: Phaser.GameObjects.Graphics;
+  
+  // UI Components
   private energyText: Phaser.GameObjects.Text;
-  private hpText: Phaser.GameObjects.Text;
+  private hpBar: { container: Phaser.GameObjects.Container, update: (val: number) => void };
+  private hpTextLabel: Phaser.GameObjects.Text;
   private blockText: Phaser.GameObjects.Text;
+  private pileText: Phaser.GameObjects.Text;
+  private turnBanner: Phaser.GameObjects.Container;
 
   constructor() {
     super('BattleScene');
   }
 
   create() {
+    this.cameras.main.fadeIn(500, 255, 255, 255);
     this.level = 1;
     
-    // Setup Player Data (Simplification: Use Warrior default)
+    // Setup Player Data
     const starter = WARRIOR_DATA.startingDeck.map(id => ({ 
         ...CARD_DATABASE[id], 
         id: generateId(),
@@ -64,19 +72,20 @@ export class BattleScene extends Phaser.Scene {
         emoji: WARRIOR_DATA.emoji
     };
 
-    // Containers
+    // Layers
+    this.createBackground();
     this.enemyContainer = this.add.container(0, 0);
     this.handContainer = this.add.container(0, 0);
     this.uiContainer = this.add.container(0, 0);
-    
-    // Background
-    this.add.rectangle(640, 360, 1280, 720, 0xfffbeb).setDepth(-10);
+    this.fxContainer = this.add.container(0, 0);
 
-    // UI Elements
+    this.enemyContainer.setDepth(10);
+    this.uiContainer.setDepth(20);
+    this.handContainer.setDepth(30);
+    this.fxContainer.setDepth(40);
+
     this.createUI();
-
-    // Drag Arrow
-    this.dragArrow = this.add.graphics().setDepth(100);
+    this.dragArrow = this.add.graphics().setDepth(1000);
 
     // Start Level
     this.startLevel(1);
@@ -84,7 +93,8 @@ export class BattleScene extends Phaser.Scene {
     // Input Events
     this.input.on('dragstart', (pointer, gameObject: CardEntity) => {
         if (!this.isPlayerTurn) return;
-        this.children.bringToTop(gameObject);
+        this.children.bringToTop(this.handContainer);
+        this.handContainer.bringToTop(gameObject);
         gameObject.highlight(true);
     });
 
@@ -94,9 +104,11 @@ export class BattleScene extends Phaser.Scene {
         gameObject.x = dragX;
         gameObject.y = dragY;
 
-        // Draw arrow if target needed
+        // Draw arrow
         if (gameObject.cardData.effects.some(e => e.target === TargetType.SINGLE_ENEMY)) {
-            this.drawArrow(gameObject.x, gameObject.y, pointer.x, pointer.y);
+            const startX = this.handContainer.x + gameObject.x;
+            const startY = this.handContainer.y + gameObject.y;
+            this.drawArrow(startX, startY, pointer.x, pointer.y);
         }
     });
 
@@ -109,14 +121,12 @@ export class BattleScene extends Phaser.Scene {
         const droppedOnEnemy = this.getEnemyAtPosition(pointer.x, pointer.y);
         const needsTarget = gameObject.cardData.effects.some(e => e.target === TargetType.SINGLE_ENEMY);
         
-        // Play Card Logic
-        if (pointer.y < 500) { // Dragged up
+        if (pointer.y < 600) { 
             if (needsTarget && droppedOnEnemy) {
                 this.playCard(gameObject, droppedOnEnemy.id);
             } else if (!needsTarget) {
                 this.playCard(gameObject);
             } else {
-                // Return to hand
                 this.arrangeHand();
             }
         } else {
@@ -125,36 +135,144 @@ export class BattleScene extends Phaser.Scene {
     });
   }
 
+  createBackground() {
+      const width = this.scale.width;
+      const height = this.scale.height;
+
+      // "Nintendo" Style Simple Background
+      // Polka dot pattern
+      const bg = this.add.graphics();
+      bg.fillStyle(COLORS.light, 1);
+      bg.fillRect(0, 0, width, height);
+
+      bg.fillStyle(0x000000, 0.03);
+      for (let x = 0; x < width; x += 40) {
+          for (let y = 0; y < height; y += 40) {
+             if ((x/40) % 2 === (y/40) % 2) {
+                 bg.fillCircle(x, y, 4);
+             }
+          }
+      }
+
+      // Floating decorative shapes
+      for(let i=0; i<5; i++) {
+          const shape = this.add.circle(
+              Math.random() * width, 
+              Math.random() * height, 
+              Math.random() * 50 + 20, 
+              Math.random() > 0.5 ? COLORS.primary : COLORS.secondary, 
+              0.1
+          );
+          this.tweens.add({
+              targets: shape,
+              y: shape.y + (Math.random() * 100 - 50),
+              duration: 5000 + Math.random() * 5000,
+              yoyo: true,
+              repeat: -1,
+              ease: 'Sine.easeInOut'
+          });
+      }
+  }
+
   createUI() {
-      // Player Avatar Area
-      this.add.text(100, 500, this.player.emoji, { fontSize: '100px' }).setOrigin(0.5);
+      const width = this.scale.width;
+      const height = this.scale.height;
+
+      // --- Bottom Panel (Hand Area) ---
+      // Using a curved "tray" at the bottom
+      const bottomPanel = this.add.graphics();
+      bottomPanel.fillStyle(0xffffff, 0.95);
+      bottomPanel.fillRoundedRect(100, height - 220, width - 200, 250, 40);
+      // Add a shadow
+      bottomPanel.lineStyle(8, 0xe5e7eb, 0.5);
+      bottomPanel.strokeRoundedRect(100, height - 220, width - 200, 250, 40);
+      this.uiContainer.add(bottomPanel);
       
-      // HP
-      this.hpText = this.add.text(100, 580, `HP: ${this.player.currentHp}/${this.player.maxHp}`, { 
-          fontFamily: 'Nunito', fontSize: '24px', color: '#e11d48', fontStyle: '900' 
-      }).setOrigin(0.5);
+      // --- Player Info (Left Side Pill) ---
+      const playerPill = UIHelper.createPanel(this, 120, height - 100, 220, 120, COLORS.white);
+      this.uiContainer.add(playerPill);
 
-      // Block
-      this.blockText = this.add.text(100, 440, '', { 
-        fontFamily: 'Nunito', fontSize: '24px', color: '#3b82f6', fontStyle: '900', stroke: '#fff', strokeThickness: 4 
-      }).setOrigin(0.5);
+      const playerAvatar = this.add.text(70, height - 100, this.player.emoji, { fontSize: '80px' }).setOrigin(0.5);
+      this.uiContainer.add(playerAvatar);
+      // Bounce Avatar
+      this.tweens.add({ targets: playerAvatar, scale: 1.05, duration: 500, yoyo: true, repeat: -1 });
 
-      // Energy
-      this.energyText = this.add.text(100, 620, `⚡ ${this.player.currentEnergy}/${this.player.maxEnergy}`, {
-          fontFamily: 'Nunito', fontSize: '32px', color: '#d97706', fontStyle: '900'
-      }).setOrigin(0.5);
-
-      // End Turn Button
-      const btn = this.add.rectangle(1150, 600, 180, 60, 0xf59e0b)
-        .setInteractive({ useHandCursor: true })
-        .setStrokeStyle(3, 0xffffff);
+      // HP Bar
+      this.hpBar = UIHelper.createProgressBar(this, 160, height - 110, 140, 20, COLORS.danger, 1);
+      this.uiContainer.add(this.hpBar.container);
       
-      const btnText = this.add.text(1150, 600, '结束回合', {
-          fontFamily: 'Nunito', fontSize: '24px', fontStyle: '900'
-      }).setOrigin(0.5);
+      this.hpTextLabel = this.add.text(230, height - 110, '', { ...TEXT_STYLES.body, fontSize: '14px', color: '#fff' }).setOrigin(0.5);
+      this.uiContainer.add(this.hpTextLabel);
 
-      btn.on('pointerdown', () => {
+      // Block Icon
+      this.blockText = this.add.text(70, height - 150, '', { 
+          fontFamily: 'Nunito', fontSize: '32px', fontStyle: '900', color: '#48cae4', stroke: '#fff', strokeThickness: 4 
+      }).setOrigin(0.5).setVisible(false);
+      this.uiContainer.add(this.blockText);
+
+      // Energy Orb (Floating)
+      const energyBg = this.add.circle(140, height - 60, 30, COLORS.energy);
+      this.uiContainer.add(energyBg);
+      
+      this.energyText = this.add.text(140, height - 60, '3', { 
+          fontFamily: 'Nunito', fontSize: '32px', fontStyle: '900', color: '#ffffff' 
+      }).setOrigin(0.5);
+      this.uiContainer.add(this.energyText);
+
+      // Deck/Discard Info (Small Pills)
+      this.pileText = this.add.text(width - 60, height - 50, 'Deck: 0\nDisc: 0', {
+          fontFamily: 'Nunito', fontSize: '14px', color: COLORS.text.muted, align: 'right'
+      }).setOrigin(1, 1);
+      this.uiContainer.add(this.pileText);
+
+      // End Turn Button (Chunky 3D)
+      const endTurnBtn = UIHelper.createButton(this, width - 120, height - 150, '结束回合', () => {
           if (this.isPlayerTurn) this.endTurn();
+      }, { color: COLORS.warning, width: 160, height: 60 });
+      this.uiContainer.add(endTurnBtn);
+
+      // Turn Banner (Hidden initially)
+      this.turnBanner = this.add.container(width/2, height/2 - 100).setAlpha(0).setDepth(1000);
+      const bannerBg = this.add.graphics();
+      bannerBg.fillStyle(0x000000, 0.7);
+      bannerBg.fillRoundedRect(-300, -50, 600, 100, 50);
+      const bannerText = this.add.text(0, 0, '', { 
+          fontFamily: 'Nunito', fontSize: '48px', fontStyle: '900', color: '#ffffff' 
+      }).setOrigin(0.5);
+      this.turnBanner.add([bannerBg, bannerText]);
+      this.turnBanner.setData('text', bannerText);
+
+      this.updatePlayerUI();
+  }
+
+  showTurnBanner(text: string, color: number) {
+      const bannerText = this.turnBanner.getData('text') as Phaser.GameObjects.Text;
+      bannerText.setText(text);
+      bannerText.setColor('#ffffff'); // Always white text
+      
+      // Background color change could be implemented if bg was accessible, keeping it simple black/dark for contrast
+      
+      this.turnBanner.setVisible(true);
+      this.turnBanner.setY(this.scale.height/2 - 100);
+      this.turnBanner.setScale(0.5);
+      
+      this.tweens.add({
+          targets: this.turnBanner,
+          alpha: 1,
+          scale: 1.2,
+          duration: 400,
+          ease: 'Back.easeOut',
+          onComplete: () => {
+              this.time.delayedCall(800, () => {
+                  this.tweens.add({
+                      targets: this.turnBanner,
+                      alpha: 0,
+                      scale: 1.5,
+                      duration: 300,
+                      onComplete: () => this.turnBanner.setVisible(false)
+                  });
+              });
+          }
       });
   }
 
@@ -164,7 +282,7 @@ export class BattleScene extends Phaser.Scene {
       this.enemyEntities.clear();
       this.enemies = [];
 
-      // Generate Enemy (Mock for Phaser)
+      // Generate Enemy
       const profile = await generateEnemyProfile(level);
       const enemyId = generateId();
       const bossHp = Math.floor(80 * Math.pow(1.1, level - 1));
@@ -185,9 +303,19 @@ export class BattleScene extends Phaser.Scene {
 
       this.enemies.push(newEnemy);
       
-      const entity = new EnemyEntity(this, 900, 400, newEnemy);
+      // Position enemy visually centered
+      const entity = new EnemyEntity(this, this.scale.width/2, 300, newEnemy);
       this.enemyContainer.add(entity);
       this.enemyEntities.set(enemyId, entity);
+
+      // Enter Animation for Enemy
+      entity.setScale(0);
+      this.tweens.add({
+          targets: entity,
+          scale: 1,
+          duration: 600,
+          ease: 'Bounce.easeOut'
+      });
 
       this.drawPile = [...this.deck].sort(() => Math.random() - 0.5);
       this.discardPile = [];
@@ -200,8 +328,12 @@ export class BattleScene extends Phaser.Scene {
       this.player.currentEnergy = this.player.maxEnergy;
       this.player.block = 0;
       this.updatePlayerUI();
+      
+      this.showTurnBanner('你的回合', COLORS.primary);
 
-      this.drawCards(this.player.baseDrawCount);
+      this.time.delayedCall(1000, () => {
+        this.drawCards(this.player.baseDrawCount);
+      });
   }
 
   drawCards(count: number) {
@@ -215,45 +347,57 @@ export class BattleScene extends Phaser.Scene {
           if(card) this.hand.push(card);
       }
       this.renderHand();
+      this.updatePlayerUI();
   }
 
   renderHand() {
-      // Clear existing card objects (pooling would be better but keeping it simple)
       this.cardEntities.forEach(c => c.destroy());
       this.cardEntities.clear();
 
-      const startX = 350;
-      const spacing = 120;
+      const cardWidth = 160; // Approximate from CardEntity
+      const totalWidth = Math.min(this.scale.width - 200, this.hand.length * (cardWidth - 60)); // Overlap
+      const startX = (this.scale.width / 2) - (totalWidth / 2); 
+      const spacing = this.hand.length > 1 ? totalWidth / (this.hand.length - 1) : 0;
       
       this.hand.forEach((card, index) => {
-          const entity = new CardEntity(this, 640, 900, card); // Start offscreen
+          const entity = new CardEntity(this, this.scale.width/2, 1000, card); 
           this.handContainer.add(entity);
           this.cardEntities.set(card.id, entity);
 
-          // Tween to position
+          const targetX = this.hand.length === 1 ? this.scale.width/2 : startX + (index * spacing);
+          const targetAngle = (index - (this.hand.length-1)/2) * 5; // Fan out more
+
           this.tweens.add({
               targets: entity,
-              x: startX + (index * spacing),
-              y: 600,
-              angle: (index - (this.hand.length-1)/2) * 5,
-              duration: 300,
-              delay: index * 50
+              x: targetX,
+              y: this.scale.height - 180, // Adjusted: Moved up to be visible
+              angle: targetAngle,
+              duration: 400,
+              delay: index * 50,
+              ease: 'Back.easeOut'
           });
       });
   }
 
   arrangeHand() {
-      const startX = 350;
-      const spacing = 120;
+      const cardWidth = 160; 
+      const totalWidth = Math.min(this.scale.width - 200, this.hand.length * (cardWidth - 60));
+      const startX = (this.scale.width / 2) - (totalWidth / 2);
+      const spacing = this.hand.length > 1 ? totalWidth / (this.hand.length - 1) : 0;
+
       let index = 0;
       this.cardEntities.forEach(entity => {
+          const targetX = this.hand.length === 1 ? this.scale.width/2 : startX + (index * spacing);
+          const targetAngle = (index - (this.cardEntities.size-1)/2) * 5;
+
           this.tweens.add({
               targets: entity,
-              x: startX + (index * spacing),
-              y: 600,
-              angle: (index - (this.cardEntities.size-1)/2) * 5,
+              x: targetX,
+              y: this.scale.height - 180,
+              angle: targetAngle,
               scale: 1,
-              duration: 200
+              duration: 200,
+              ease: 'Power2'
           });
           index++;
       });
@@ -261,31 +405,29 @@ export class BattleScene extends Phaser.Scene {
 
   playCard(cardEntity: CardEntity, targetId?: string) {
       if (this.player.currentEnergy < cardEntity.cost) {
-          this.showFloatingText(cardEntity.x, cardEntity.y - 100, "能量不足!", '#ff0000');
+          this.showFloatingText(cardEntity.x, cardEntity.y - 100, "能量不足!", COLORS.danger);
           this.arrangeHand();
           return;
       }
 
-      // Cost
       this.player.currentEnergy -= cardEntity.cost;
       
-      // Effects
       cardEntity.cardData.effects.forEach(effect => {
           this.resolveEffect(effect, targetId);
       });
 
-      // Remove from hand
       this.hand = this.hand.filter(c => c.id !== cardEntity.id);
       this.discardPile.push(cardEntity.cardData);
       
-      // Animate discard
+      // Swoosh animation
       this.tweens.add({
           targets: cardEntity,
-          x: 1200,
-          y: 700,
-          alpha: 0,
+          x: this.scale.width + 200,
+          y: -200,
+          angle: 360,
           scale: 0.5,
-          duration: 300,
+          duration: 500,
+          ease: 'Cubic.easeIn',
           onComplete: () => {
               cardEntity.destroy();
               this.cardEntities.delete(cardEntity.id);
@@ -297,7 +439,6 @@ export class BattleScene extends Phaser.Scene {
   }
 
   resolveEffect(effect: any, targetId?: string) {
-      // Simplified logic for Phaser demo
       if (effect.type === EffectType.DAMAGE) {
           const target = this.enemies.find(e => e.id === targetId);
           if (target) {
@@ -305,37 +446,36 @@ export class BattleScene extends Phaser.Scene {
               const entity = this.enemyEntities.get(target.id);
               entity?.updateData(target);
               entity?.hitEffect(effect.value);
+              this.showFloatingText(entity!.x, entity!.y - 150, `-${effect.value}`, COLORS.danger, true);
           }
       } else if (effect.type === EffectType.BLOCK) {
           this.player.block += effect.value;
-          this.showFloatingText(200, 400, `+${effect.value} 🛡️`, '#3b82f6');
+          this.showFloatingText(200, 400, `+${effect.value} 🛡️`, COLORS.block);
       } else if (effect.type === EffectType.HEAL) {
           this.player.currentHp = Math.min(this.player.maxHp, this.player.currentHp + effect.value);
-          this.showFloatingText(200, 400, `+${effect.value} ❤️`, '#10b981');
+          this.showFloatingText(200, 400, `+${effect.value} ❤️`, COLORS.success);
       } else if (effect.type === EffectType.DRAW) {
           this.drawCards(effect.value);
       } else if (effect.type === EffectType.ADD_ENERGY) {
           this.player.currentEnergy += effect.value;
       }
 
-      // Check win
       if (this.enemies.every(e => e.currentHp <= 0)) {
-          setTimeout(() => {
+          this.time.delayedCall(1000, () => {
              this.scene.start('RewardScene');
-          }, 1000);
+          });
       }
   }
 
   endTurn() {
       this.isPlayerTurn = false;
       
-      // Discard Hand
       this.hand.forEach(c => this.discardPile.push(c));
       this.hand = [];
       this.renderHand();
 
-      // Enemy Turn
-      this.time.delayedCall(500, () => this.processEnemyTurn());
+      this.showTurnBanner('敌人回合', COLORS.danger);
+      this.time.delayedCall(1500, () => this.processEnemyTurn());
   }
 
   processEnemyTurn() {
@@ -353,18 +493,17 @@ export class BattleScene extends Phaser.Scene {
               }
               this.player.currentHp -= damage;
               
-              // Camera shake
               if (damage > 0) {
                   this.cameras.main.shake(200, 0.01);
-                  this.showFloatingText(200, 500, `-${damage}`, '#e11d48');
+                  this.showFloatingText(200, 500, `-${damage}`, COLORS.danger, true);
               }
           } else if (enemy.intent === IntentType.BUFF) {
               enemy.block += 5;
               const ent = this.enemyEntities.get(enemy.id);
               ent?.updateData(enemy);
+              this.showFloatingText(ent!.x, ent!.y - 100, 'Buff!', COLORS.secondary);
           }
 
-          // Update Intent for next turn (Random)
           enemy.intent = Math.random() > 0.3 ? IntentType.ATTACK : IntentType.BUFF;
           enemy.intentValue = Math.floor(Math.random() * 5) + 5;
           const ent = this.enemyEntities.get(enemy.id);
@@ -381,38 +520,69 @@ export class BattleScene extends Phaser.Scene {
   }
 
   getEnemyAtPosition(x: number, y: number): Enemy | undefined {
-      for (const [id, entity] of this.enemyEntities) {
-          const bounds = entity.getBounds();
-          if (bounds.contains(x, y)) {
-              return this.enemies.find(e => e.id === id);
+      let closest: Enemy | undefined;
+      let minDist = 200; 
+
+      this.enemyEntities.forEach((entity, id) => {
+          const dist = Phaser.Math.Distance.Between(x, y, entity.x, entity.y);
+          if (dist < minDist) {
+              minDist = dist;
+              closest = this.enemies.find(e => e.id === id);
           }
-      }
-      return undefined;
+      });
+      return closest;
   }
 
   drawArrow(startX: number, startY: number, endX: number, endY: number) {
       this.dragArrow.clear();
-      this.dragArrow.lineStyle(4, 0xff0000);
-      this.dragArrow.beginPath();
-      this.dragArrow.moveTo(startX, startY);
-      this.dragArrow.lineTo(endX, endY);
-      this.dragArrow.strokePath();
-      this.dragArrow.fillCircle(endX, endY, 10);
+      this.dragArrow.lineStyle(8, COLORS.primary);
+      
+      const curve = new Phaser.Curves.QuadraticBezier(
+          new Phaser.Math.Vector2(startX, startY),
+          new Phaser.Math.Vector2((startX + endX)/2, startY - 150),
+          new Phaser.Math.Vector2(endX, endY)
+      );
+      curve.draw(this.dragArrow);
+      
+      this.dragArrow.fillStyle(COLORS.primary, 1);
+      this.dragArrow.fillCircle(endX, endY, 15);
   }
 
-  showFloatingText(x: number, y: number, text: string, color: string) {
+  showFloatingText(x: number, y: number, text: string, color: number | string, isDamage: boolean = false) {
+      const colorStr = typeof color === 'number' ? '#' + color.toString(16) : color;
       const t = this.add.text(x, y, text, { 
-          fontFamily: 'Nunito', fontSize: '40px', fontStyle: '900', color: color, stroke: '#fff', strokeThickness: 4 
-      }).setOrigin(0.5);
+          fontFamily: 'Nunito', fontSize: isDamage ? '64px' : '48px', fontStyle: '900', color: colorStr as string, 
+          stroke: '#fff', strokeThickness: isDamage ? 8 : 6
+      }).setOrigin(0.5).setDepth(200);
+      
+      // Juice: Scale up then fall down
+      t.setScale(0);
       this.tweens.add({
-          targets: t, y: y - 100, alpha: 0, duration: 1000, onComplete: () => t.destroy()
+          targets: t,
+          scale: 1,
+          y: y - 50,
+          duration: 300,
+          ease: 'Back.easeOut',
+          onComplete: () => {
+              this.tweens.add({
+                  targets: t,
+                  y: y + 50,
+                  alpha: 0,
+                  duration: 600,
+                  delay: 200,
+                  ease: 'Quad.easeIn',
+                  onComplete: () => t.destroy()
+              });
+          }
       });
   }
 
   updatePlayerUI() {
-      this.hpText.setText(`HP: ${this.player.currentHp}/${this.player.maxHp}`);
-      this.energyText.setText(`⚡ ${this.player.currentEnergy}/${this.player.maxEnergy}`);
-      
+      this.hpBar.update(this.player.currentHp / this.player.maxHp);
+      this.hpTextLabel.setText(`${this.player.currentHp}/${this.player.maxHp}`);
+      this.energyText.setText(`${this.player.currentEnergy}`);
+      this.pileText.setText(`Deck: ${this.drawPile.length}\nDisc: ${this.discardPile.length}`);
+
       if (this.player.block > 0) {
           this.blockText.setText(`🛡️${this.player.block}`);
           this.blockText.setVisible(true);
